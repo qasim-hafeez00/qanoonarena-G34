@@ -1,0 +1,31 @@
+{
+  "run_id": "G34_M1+A0_smoke_s13_20261124-181550",
+  "group_id": "G34",
+  "config": "M1+A0",
+  "memory": "M1",
+  "adapter": "A0",
+  "seed": 13,
+  "split": "smoke",
+  "config_hash": "f1c935f7080e",
+  "adapter_hash": "none",
+  "backend": "mock",
+  "prompt_hash": "20043fdea53f",
+  "corpus_hash": "6e449a2a1669",
+  "n_sessions": 30,
+  "wall_clock_s": 2.3,
+  "python": "3.13.1",
+  "summary": {
+    "score": 53.67,
+    "accuracy": 0.3667,
+    "citation_f1": 0.9167,
+    "abstain_f1": 0.0,
+    "memory_recall": 0.5,
+    "efficiency": 1.0,
+    "tokens_per_turn": 1371.1,
+    "latency_p50_ms": 34,
+    "latency_p95_ms": 64,
+    "ungrounded_rate": 0,
+    "n_turns": 30
+  },
+  "warning": "MOCK BACKEND - not valid for submission"
+}

@@ -1,0 +1,179 @@
+% =====================================================================
+% QanoonArena - AI-4016 Assignment 3 - Step 6 paper section template
+% Copy to report/section.tex, fill in, and compile:  pdflatex section.tex
+% Keep the headings, table layouts and macros: your section is merged
+% into the class paper as it is. Limit: 3 pages plus appendix.
+% =====================================================================
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{mathptmx}          % Times
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+
+% ---- fill these in ---------------------------------------------------
+\newcommand{\groupid}{G34}
+\newcommand{\memtype}{M1 (summary memory)}
+\newcommand{\traintype}{A1 (QLoRA SFT)}
+\newcommand{\members}{Qasim Hafeez, \todo{Member Two}, \todo{Member Three}}
+% ----------------------------------------------------------------------
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{QanoonArena: \memtype{} with \traintype{}\\[2pt]\large Group \groupid{}}
+\author{\members}
+\date{AI-4016 Agentic AI, Fall 2026, FAST-NUCES Islamabad}
+
+\begin{document}
+\maketitle
+
+\section{Method}
+\label{sec:\groupid-method}
+
+\subsection{Memory}
+M1 keeps one state per conversation, written in the \texttt{memory\_write} node after every answer and
+read in \texttt{memory\_read} before the next one (\texttt{agent/memory/m1\_summary.py}; \texttt{--memory M0}
+switches it off without other changes). The state has two layers.
+(i)~A \emph{running summary} of what the user has said: the same backbone rewrites it from
+(old summary, new user message) with a fixed prompt that asks for at most 120 words of \texttt{-} lines,
+keeps parties, dates, places, amounts, ages, Acts, sections and case numbers in the user's own words,
+forbids legal analysis or sections the user did not name, and tells the model to \emph{replace} a
+corrected fact. The LoRA adapter is switched off for this call, so the summariser is identical in
+M1+A0 and M1+A1. Pure filler turns (``ok'', ``please keep it short'') skip the rewrite, and an
+unusable output (empty, or a JSON answer) falls back to an extractive summary of the user's messages.
+(ii)~\emph{Pinned key facts}, extracted by rules from the user's words: sections mapped to corpus ids
+(``section 460 of the Pakistan Penal Code'' $\rightarrow$ \texttt{PPC-460}), ISO-normalised dates, ages,
+money amounts and case numbers. They are printed by code, so a rewrite can never drop them.
+\textbf{Corrections}: a message with a correction cue (\emph{sorry, actually, I meant, not X but Y,
+instead of}) replaces all older key facts of the same type. The value after ``not''/``instead of'' is
+recognised as the old one. Old values are listed as ``corrected, do NOT use'', and summary lines that
+still contain them are deleted.
+\textbf{Never stored}: retrieved documents, tool output and the bot's answer text. Only the ids of
+citations that passed the citation monitor are kept.
+\textbf{Read}: one block (summary, key facts, corrections, earlier sources, last questions) whose
+lines carry drop priorities. Under the 768-token budget the earlier questions go first, then the
+oldest summary lines; key facts go last.
+\textbf{Retrieval hint}: pinned sections written as ``section $N$ \emph{Act}'' (the fixed BM25 boosts
+section matches), case numbers, the user's first fact-bearing message and the first two summary lines,
+capped at 70 words. It is left empty when the new message names its own section or case without a
+back-reference, so a topic change is not polluted. With the mock backend on the practice set, the
+hint raises gold-document retrieval from 0/20 to 18/20 (T3) and from 0/20 to 20/20 (T4), and leaves
+T1/T2 unchanged.
+
+\subsection{Training}
+Data: \texttt{harness.build\_sft\_data} on the train split gives 1851 examples (T1 800, T2 358,
+T4 307, T3 199, T5 187), in the bot's exact prompt with the M0 window as MEMORY, and the gold JSON
+answer as the target. Measured with the Qwen3 tokenizer, 215 examples (11.6\%) exceed the fixed
+\texttt{max\_seq\_len}~$=2048$ (maximum 2392). Because TRL truncates on the right, which would delete
+the answer, \texttt{agent/training/prepare\_sft.py} shortens their DOCUMENTS block from the end
+(lowest-ranked document first) until they fit. The leakage check passes on the result.
+QLoRA: 4-bit NF4 base, LoRA $r{=}16$, $\alpha{=}32$, dropout 0.05 on all attention and MLP
+projections, learning rate $2\times10^{-4}$ (cosine, 3\% warm-up), 2 epochs, effective batch 8,
+completion-only loss, seed 13, fp16 on a \todo{GPU}. Adapter: \todo{link}, hash \todo{hash}.
+
+\subsection{Citation monitor}
+\texttt{cite\_check} \emph{normalises, then drops}. A citation that is a sloppy spelling of a
+document the bot saw this turn (``PPC 379'', ``Section 460 PPC'', ``SHC 140894'', a chunk id
+\texttt{LA-3\#1}) is rewritten to that id. Anything still not among the retrieved or memory ids,
+or not in the corpus, is removed from the citation list and logged in the span
+(\texttt{ungrounded}, \texttt{not\_in\_corpus}, \texttt{action}). The answer text is never changed
+and never blocked: blocking would turn correct answers into refusals (E7), while dropping a bad id
+only helps citation precision. The dashboard reports wrong-citation rates both before (raw model)
+and after the checker.
+
+\section{Results}
+\label{sec:\groupid-results}
+
+Table~\ref{tab:\groupid-main} gives the four versions on the practice set, the mean over the three
+fixed seeds, with 95\% bootstrap confidence intervals over conversations. Paste the rows printed
+by \texttt{python -m harness.summarize --group \groupid{} --split dev --latex}.
+
+\begin{table}[h]
+\centering\small
+\caption{Four versions of group \groupid{} on the practice set (mean of 3 seeds, 95\% CI).}
+\label{tab:\groupid-main}
+\begin{tabular}{lcccccr}
+\toprule
+Version & Score & Accuracy & Citation F1 & Abstain F1 & Memory recall & Tokens/turn \\
+\midrule
+M0+A0 & \todo{paste} & & & & & \\
+M1+A0 & & & & & & \\
+M0+A1 & & & & & & \\
+M1+A1 & & & & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Effects.} Memory effect: \todo{+x.xx [a, b]} points. Training effect: \todo{+x.xx [a, b]}
+points. Interaction: \todo{+x.xx [a, b]} points. \todo{One sentence each: do memory and training add up,
+overlap or interfere?}
+
+\begin{table}[h]
+\centering\small
+\caption{Ablation inside the memory variant (practice set, best adapter).}
+\label{tab:\groupid-ablation}
+\begin{tabular}{lccc}
+\toprule
+Setting & Score & Memory recall & Tokens/turn \\
+\midrule
+Summary target 40 words & & & \\
+Summary target 120 words (default) & & & \\
+M0 (no memory) & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering\small
+\caption{Cost of each version.}
+\label{tab:\groupid-cost}
+\begin{tabular}{lccc}
+\toprule
+Version & Latency p50 (ms) & Latency p95 (ms) & Training GPU-hours \\
+\midrule
+M0+A0 & & & 0 \\
+M1+A0 & & & 0 \\
+M0+A1 & & & \\
+M1+A1 & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Analysis}
+\label{sec:\groupid-analysis}
+
+\begin{table}[h]
+\centering\small
+\caption{Labelled failures per version (codes E1 to E8, from \texttt{ERRORS.csv}).}
+\label{tab:\groupid-errors}
+\begin{tabular}{lcccccccc}
+\toprule
+Version & E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 \\
+\midrule
+M0+A0 & & & & & & & & \\
+M1+A1 & & & & & & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{What the interaction and the failure counts tell you. Then two annotated traces, turn by turn:
+one success and one failure. Quote the memory read/write and the citations from the trace.}
+
+\section{Limitations and ethics}
+\todo{What the system must not be used for; where it was wrong in ways a lay user could not detect;
+every deviation from the fixed controls (or ``None'').}
+
+\section*{Contributions}
+\begin{itemize}[leftmargin=*,nosep]
+\item \todo{Member One: what they built, ran and wrote.}
+\item \todo{Member Two: ...}
+\item \todo{Member Three: ...}
+\end{itemize}
+
+\appendix
+\section{Appendix}
+\todo{Optional: extra tables, prompts by hash, more traces.}
+
+\end{document}

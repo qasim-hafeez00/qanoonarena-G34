@@ -1,3 +1,22 @@
+# QanoonArena — Group G34 (M1 summary memory × A1 QLoRA SFT)
+
+| Deliverable | Where |
+| --- | --- |
+| Step 1 questions | `contrib/G34.jsonl` (built by `scripts/make_contrib_g34.py`; checker: OK) |
+| Step 1 review of another group | `review/G34_review.csv` (evidence helper: `scripts/review_helper.py`) |
+| Memory (Step 2) | `agent/memory/m1_summary.py`, rules in `MEMORY.md` |
+| Training (Step 3) | `agent/training/prepare_sft.py`, `notebooks/G34_colab_pipeline.ipynb`, `MODEL_CARD.md` |
+| Citation checker (Step 4) | `agent/cite_check.py` (normalise, then drop) |
+| Runs, dashboard, errors (Steps 4–5) | `scripts/g34_run.py` (resumable), `scripts/dashboard.py`, `scripts/error_candidates.py` → `ERRORS.csv` |
+| Report (Step 6) | `report/section.tex` |
+| Deviations | `DEVIATIONS.md` (no change to `harness/`) |
+
+Order on Colab (T4): run `notebooks/G34_colab_pipeline.ipynb` top to bottom. It trains A1, then
+runs `M0+A0 → M1+A0 → M0+A1 → M1+A1` × seeds 13, 42, 2026 with resume. Outputs are kept on Google Drive.
+GitHub Actions variables: `QA_GROUP=G34`, `QA_MEMORY=M1`.
+
+---
+
 # QanoonArena starter kit — AI-4016 Assignment 3
 
 This repository is your starting point for Assignment 3. It contains a working legal
