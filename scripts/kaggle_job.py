@@ -1,4 +1,5 @@
-"""Run G34 experiments on a multi-GPU box (Kaggle 2x T4), one version per GPU, in parallel.
+"""Run G34 experiments in parallel: one version per GPU (Kaggle 2x T4), or several on one GPU
+("0=M0+A0;0=M1+A0": inference needs ~3.5 GB, so two processes share a 15 GB T4).
 
 Kaggle notebook (Accelerator: GPU T4 x2, Internet: on), one cell, then "Save Version > Save & Run All":
 
@@ -82,7 +83,7 @@ def main(argv=None):
     procs = []
     logs = Path(a.out_dir)
     logs.mkdir(parents=True, exist_ok=True)
-    for job in a.jobs.split(";"):
+    for i, job in enumerate(a.jobs.split(";")):
         gpu, _, cfgs = job.partition("=")
         cmd = [sys.executable, "scripts/g34_run.py", "--group", a.group, "--split", a.split,
                "--configs", cfgs, "--seeds", a.seeds, "--backend", a.backend]
@@ -95,7 +96,7 @@ def main(argv=None):
         for e in a.env:
             cmd += ["--env", e]
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.strip(), PYTHONUNBUFFERED="1")
-        log = open(logs / f"log_gpu{gpu.strip()}.txt", "w")
+        log = open(logs / f"log_job{i}_gpu{gpu.strip()}.txt", "w")
         print(f"[gpu {gpu}]", " ".join(cmd), flush=True)
         procs.append((gpu, subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT), log))
         time.sleep(90 if a.backend == "hf" else 1)  # stagger model loading so the two processes do not download at once
@@ -115,7 +116,7 @@ def main(argv=None):
             for fp in (ROOT / sub).rglob("*"):
                 if fp.is_file():
                     z.write(fp, fp.relative_to(ROOT))
-        for fp in logs.glob("log_gpu*.txt"):
+        for fp in logs.glob("log_job*_gpu*.txt"):
             z.write(fp, f"logs/{fp.name}")
     print("wrote", zp, flush=True)
     if any(codes.values()):
