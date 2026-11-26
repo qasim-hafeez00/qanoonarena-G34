@@ -35,7 +35,7 @@ at most the run in progress: just run the notebook again and it resumes.
 md("## 1. Setup")
 code("""
 # ---- change these -----------------------------------------------------------
-REPO_URL = "https://github.com/<your-account>/<your-repo>.git"   # your group's repo (private is fine: use a token URL)
+REPO_URL = "https://github.com/qasim-hafeez00/qanoonarena-G34.git"   # group repo (if private: use a token URL)
 GROUP    = "G34"
 HF_REPO  = ""          # e.g. "your-hf-user/qanoonarena-G34-A1" to upload the adapter (optional)
 DRIVE_DIR = "/content/drive/MyDrive/qanoonarena_G34"
@@ -62,6 +62,19 @@ print(os.getcwd(), os.listdir("."))
 code("""
 !pip install -q -r requirements-train.txt hf_xet matplotlib
 import torch; print(torch.cuda.get_device_name(0))
+""")
+md("""### 1b. Live traces in Arize Phoenix (Step 4)
+The harness always writes `traces/*.jsonl` (the file we submit). This cell also mirrors every span
+to a local Arize Phoenix server through OpenTelemetry (`harness/tracing.py` reads
+`OTEL_EXPORTER_OTLP_ENDPOINT`). Run it after every runtime restart, before any experiment; open the
+printed URL to browse traces and take the screenshots for the report.
+""")
+code("""
+!pip install -q arize-phoenix opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+import os, phoenix as px
+session = px.launch_app()
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:6006"   # child processes inherit it
+print("Phoenix UI:", session.url)
 """)
 md("""## 2. Training data (Step 3)
 The harness builder makes prompts exactly as the bot sees them; `agent.training.prepare_sft`

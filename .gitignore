@@ -11,3 +11,4 @@ data_sft*.jsonl
 report/*.aux
 report/*.log
 report/*.out
+local_runs/
