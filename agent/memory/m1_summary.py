@@ -160,6 +160,8 @@ class SummaryMemory(Memory):
 
         # 1) pinned anchors from the USER message only
         new = self._extract(msg, turn, st)
+        if is_corr:
+            new += self._bare_age_correction(msg, turn, st, new)
         if is_corr and new:
             # in "not X but Y" / "instead of X", X is the OLD value: never re-pin it
             old_starts = [m.end() for m in _OLD_MARK.finditer(msg)]
@@ -218,6 +220,20 @@ class SummaryMemory(Memory):
             for m in rx.finditer(text):
                 out.append((m.start(), code))
         return sorted(out)
+
+    @staticmethod
+    def _bare_age_correction(msg: str, turn: int, st: SessionState, new: list[Anchor]) -> list[Anchor]:
+        """'Sorry, he is actually 19, not 15': in a correction about age, a bare number is an age.
+        Only used when an age is already pinned and the message names no age in the usual form."""
+        if any(a.kind == "age" for a in new) or not any(a.kind == "age" for a in st.anchors):
+            return []
+        if not re.search(r"\b(?:age|aged|years?|old|born)\b", msg, re.I):
+            return []
+        out = []
+        for m in re.finditer(r"(?<![\d:/])(?<!\d[,.])(\d{1,3})(?!\d|[,.:/]\d|\s*(?:%|rupees|rs\b|pkr|am\b|pm\b))", msg, re.I):
+            if 0 < int(m.group(1)) < 120:
+                out.append(Anchor("age", f"{m.group(1)} years old", m.group(1), turn, "", m.start()))
+        return out
 
     def _extract(self, msg: str, turn: int, st: SessionState) -> list[Anchor]:
         found: list[Anchor] = []
