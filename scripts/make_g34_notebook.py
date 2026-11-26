@@ -123,6 +123,13 @@ if not DONE:
         logging_steps=10, save_strategy="steps", save_steps=100, save_total_limit=2, fp16=True, bf16=False,
         gradient_checkpointing=True, max_length=T["max_seq_len"], completion_only_loss=True, seed=SEED, report_to="none")
     trainer = SFTTrainer(model=model, args=args, train_dataset=ds, processing_class=tok, peft_config=lora)
+    # Qwen3 ships bf16 weights, so PEFT creates the LoRA matrices in bf16; the T4 has no bf16 and
+    # the fp16 GradScaler cannot unscale bf16 grads. Keep the trainable LoRA weights in fp32
+    # (standard QLoRA: frozen 4-bit base, fp16 compute, fp32 adapter weights).
+    for _, p in trainer.model.named_parameters():
+        if p.requires_grad:
+            p.data = p.data.float()
+    print("trainable params:", sum(p.numel() for p in trainer.model.parameters() if p.requires_grad))
     last = None
     if os.path.isdir("outputs/sft"):
         cks = sorted([d for d in os.listdir("outputs/sft") if d.startswith("checkpoint-")], key=lambda d: int(d.split("-")[1]))
