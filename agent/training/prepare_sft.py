@@ -33,7 +33,10 @@ def fit_example(row: dict, tok, max_len: int, margin: int = 8) -> tuple[dict, in
     msgs = row["messages"]
 
     def n_tokens(m):
-        return len(tok.apply_chat_template(m, tokenize=True))
+        ids = tok.apply_chat_template(m, tokenize=True)
+        if isinstance(ids, dict) or hasattr(ids, "keys"):  # transformers >= 5 returns a BatchEncoding
+            ids = ids["input_ids"]
+        return len(ids)
 
     before = n_tokens(msgs)
     if before <= max_len:

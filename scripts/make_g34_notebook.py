@@ -60,8 +60,10 @@ for d in ["results", "traces", "adapters", "submission", "outputs"]:
 print(os.getcwd(), os.listdir("."))
 """)
 code("""
-!pip install -q -r requirements-train.txt hf_xet matplotlib
-import torch; print(torch.cuda.get_device_name(0))
+# transformers < 5: the fixed harness/backends.py reads `ids.shape` from apply_chat_template,
+# which transformers 5 turned into a dict (see DEVIATIONS.md). Restart the session once after this.
+!pip install -q -r requirements-train.txt "transformers>=4.51,<5" hf_xet matplotlib
+import torch, transformers; print(torch.cuda.get_device_name(0), "transformers", transformers.__version__)
 """)
 md("""### 1b. Live traces in Arize Phoenix (Step 4)
 The harness always writes `traces/*.jsonl` (the file we submit). This cell also mirrors every span

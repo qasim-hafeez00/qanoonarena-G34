@@ -339,7 +339,10 @@ class SummaryMemory(Memory):
         d = be.cfg["decoding"]
         cap = min(d["max_new_tokens"], int(self.max_words * 2) + 40)
         ids = be.tok.apply_chat_template(messages, add_generation_prompt=True,
-                                         return_tensors="pt").to(be.model.device)
+                                         return_tensors="pt")
+        if not hasattr(ids, "shape"):  # transformers >= 5 returns a BatchEncoding
+            ids = ids["input_ids"]
+        ids = ids.to(be.model.device)
         with torch.no_grad():
             out = be.model.generate(ids, max_new_tokens=cap, do_sample=d["temperature"] > 0,
                                     temperature=d["temperature"], top_p=d["top_p"],
