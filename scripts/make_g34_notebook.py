@@ -18,9 +18,10 @@ def code(s):
 md("""
 # G34 QanoonArena pipeline: M1 summary memory × A1 QLoRA SFT (Colab T4)
 
-Runtime > Change runtime type > **T4 GPU**. Run the cells top to bottom. Everything that matters
-(`results/`, `traces/`, `adapters/`, `submission/`) lives on **Google Drive**, so a disconnect loses
-at most the run in progress: just run the notebook again and it resumes.
+**Runtime > Run all** (T4 GPU) and approve Google Drive. That is all: every cell checks what is already
+on Drive (`results/`, `traces/`, `adapters/`, `outputs/`) and skips or resumes it, so after a lost runtime
+you just do Run all again. The account whose Drive holds the training checkpoint/adapter is the **main**
+account (training, then the A1 versions); any other account is a **helper** (A0 versions + memory ablation).
 
 | Part | What | Approx. T4 time |
 |---|---|---|
@@ -61,7 +62,7 @@ print(os.getcwd(), os.listdir("."))
 """)
 code("""
 # transformers < 5: the fixed harness/backends.py reads `ids.shape` from apply_chat_template,
-# which transformers 5 turned into a dict (see DEVIATIONS.md). Restart the session once after this.
+# which transformers 5 turned into a dict (see DEVIATIONS.md). Run on a fresh runtime (Run all).
 !pip install -q -r requirements-train.txt "transformers>=4.51,<5" hf_xet matplotlib
 import torch, transformers; print(torch.cuda.get_device_name(0), "transformers", transformers.__version__)
 """)
@@ -78,121 +79,66 @@ session = px.launch_app()
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:6006"   # child processes inherit it
 print("Phoenix UI:", session.url)
 """)
-md("""## 2. Training data (Step 3)
-The harness builder makes prompts exactly as the bot sees them; `agent.training.prepare_sft`
+md("""## 2. Training (Step 3, main account only)
+Data: the harness builder makes prompts exactly as the bot sees them; `agent.training.prepare_sft`
 shortens the DOCUMENTS block of the 215 prompts longer than the fixed `max_seq_len` (2048) so the
-answer is never truncated; the leakage check must say OK.""")
+answer is never truncated; the leakage check must say OK. Training: `agent.training.train_sft`
+(QLoRA, fixed budget from config.yaml) in a subprocess, so the GPU is free again afterwards. It resumes
+from the newest checkpoint in `outputs/sft/` and is skipped once `adapters/a1` exists.""")
 code("""
-!python -m harness.build_sft_data --out data_sft.jsonl
-!python -m agent.training.prepare_sft data_sft.jsonl data_sft_fit.jsonl
-!python -m harness.leakage_check data_sft_fit.jsonl
-!cp data_sft_fit.jsonl.report.json {DRIVE_DIR}/
-""")
-md("## 3. QLoRA SFT (A1) — skip if `adapters/a1` already exists on Drive")
-code("""
-import json, yaml, time, inspect, os
-import torch
-from datasets import Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import LoraConfig
-from trl import SFTConfig, SFTTrainer
-
-cfg = yaml.safe_load(open("harness/config.yaml")); T = cfg["training"]; BASE = cfg["model"]["base_model"]; SEED = cfg["seeds"][0]
-DONE = os.path.exists("adapters/a1/adapter_config.json")
-print("adapter already trained:", DONE, "| budget:", T)
-
-def make_args(cls, **kw):
-    names = set(getattr(cls, "__dataclass_fields__", {})) or set(inspect.signature(cls).parameters)
-    if "max_length" not in names and "max_seq_length" in names and "max_length" in kw:
-        kw["max_seq_length"] = kw.pop("max_length")
-    print("ignored by this TRL version:", [k for k in kw if k not in names])
-    return cls(**{k: v for k, v in kw.items() if k in names})
-
-if not DONE:
-    rows = [json.loads(l) for l in open("data_sft_fit.jsonl")][: T["max_train_examples"]]
-    ds = Dataset.from_list([{"prompt": r["messages"][:-1], "completion": [r["messages"][-1]]} for r in rows]).shuffle(seed=SEED)
-    tok = AutoTokenizer.from_pretrained(BASE)
-    if tok.pad_token is None: tok.pad_token = tok.eos_token
-    bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16, bnb_4bit_use_double_quant=True)
-    model = AutoModelForCausalLM.from_pretrained(BASE, quantization_config=bnb, device_map="auto", torch_dtype=torch.float16)
-    model.config.use_cache = False
-    lora = LoraConfig(r=T["lora_r"], lora_alpha=T["lora_alpha"], lora_dropout=T["lora_dropout"],
-                      target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"], task_type="CAUSAL_LM")
-    args = make_args(SFTConfig, output_dir="outputs/sft", num_train_epochs=T["epochs"], learning_rate=T["learning_rate"],
-        per_device_train_batch_size=1, gradient_accumulation_steps=8, lr_scheduler_type="cosine", warmup_ratio=0.03,
-        logging_steps=10, save_strategy="steps", save_steps=100, save_total_limit=2, fp16=True, bf16=False,
-        gradient_checkpointing=True, max_length=T["max_seq_len"], completion_only_loss=True, seed=SEED, report_to="none")
-    trainer = SFTTrainer(model=model, args=args, train_dataset=ds, processing_class=tok, peft_config=lora)
-    # Qwen3 ships bf16 weights, so PEFT creates the LoRA matrices in bf16; the T4 has no bf16 and
-    # the fp16 GradScaler cannot unscale bf16 grads. Keep the trainable LoRA weights in fp32
-    # (standard QLoRA: frozen 4-bit base, fp16 compute, fp32 adapter weights).
-    for _, p in trainer.model.named_parameters():
-        if p.requires_grad:
-            p.data = p.data.float()
-    print("trainable params:", sum(p.numel() for p in trainer.model.parameters() if p.requires_grad))
-    last = None
-    if os.path.isdir("outputs/sft"):
-        cks = sorted([d for d in os.listdir("outputs/sft") if d.startswith("checkpoint-")], key=lambda d: int(d.split("-")[1]))
-        last = f"outputs/sft/{cks[-1]}" if cks else None
-    print("resume from:", last)
-    t0 = time.time(); trainer.train(resume_from_checkpoint=last); minutes = (time.time() - t0) / 60
-    trainer.model.save_pretrained("adapters/a1"); tok.save_pretrained("adapters/a1")
-    meta = {"gpu": torch.cuda.get_device_name(0), "train_minutes_this_session": round(minutes, 1),
-            "resumed_from": last, "n_examples": len(rows), "settings": T, "seed": SEED,
-            "log_history": trainer.state.log_history}
-    json.dump(meta, open("adapters/a1/training_meta.json", "w"), indent=1)
-    print(f"done in {minutes:.1f} min")
+import glob, os, subprocess, sys
+HAS_ADAPTER = os.path.exists("adapters/a1/adapter_config.json")
+MAIN = HAS_ADAPTER or bool(glob.glob("outputs/sft/checkpoint-*"))
+print("adapter trained:", HAS_ADAPTER, "| this is the", "MAIN" if MAIN else "HELPER", "account")
+if MAIN and not HAS_ADAPTER:
+    for cmd in ["python -m harness.build_sft_data --out data_sft.jsonl",
+                "python -m agent.training.prepare_sft data_sft.jsonl data_sft_fit.jsonl",
+                "python -m harness.leakage_check data_sft_fit.jsonl",
+                "python -m agent.training.train_sft --data data_sft_fit.jsonl --out adapters/a1 --work outputs/sft"]:
+        print("$", cmd, flush=True)
+        subprocess.run(cmd, shell=True, check=True)
 """)
 code("""
-import json, matplotlib.pyplot as plt
-meta = json.load(open("adapters/a1/training_meta.json"))
-h = [x for x in meta["log_history"] if "loss" in x]
-plt.figure(figsize=(6,3.5)); plt.plot([x["step"] for x in h], [x["loss"] for x in h], color="#2a78d6", lw=2)
-plt.xlabel("optimizer step"); plt.ylabel("training loss"); plt.title("G34 A1 QLoRA SFT loss"); plt.grid(alpha=.3)
-plt.savefig("adapters/a1/sft_loss.png", dpi=160, bbox_inches="tight"); plt.show()
-print(meta["gpu"], meta["train_minutes_this_session"], "min")
+import json, os, matplotlib.pyplot as plt
+if os.path.exists("outputs/sft/loss_log.jsonl"):
+    pts = {}
+    for l in open("outputs/sft/loss_log.jsonl"):
+        r = json.loads(l)
+        if "loss" in r: pts[r["step"]] = r["loss"]
+    s = sorted(pts)
+    plt.figure(figsize=(6, 3.5)); plt.plot(s, [pts[k] for k in s], color="#2a78d6", lw=2)
+    plt.xlabel("optimizer step"); plt.ylabel("training loss"); plt.title("G34 A1 QLoRA SFT loss"); plt.grid(alpha=.3)
+    os.makedirs("outputs/figures", exist_ok=True)
+    plt.savefig("outputs/figures/sft_loss.png", dpi=160, bbox_inches="tight"); plt.show()
+if os.path.exists("adapters/a1/training_meta.json"):
+    m = json.load(open("adapters/a1/training_meta.json"))
+    print(m["gpu"], m["train_minutes_total"], "min over", len(m["sessions"]), "session(s)")
 """)
+md("""## 3. Experiments on the practice set (Step 5)
+`scripts/colab_jobs.py` starts this account's jobs side by side on the T4 (main: M0+A1, M1+A1, then the
+MEMORY.md demo; helper: M0+A0, M1+A0 and the 40-word memory ablation). Finished (version, seed) runs are
+skipped, so re-running resumes. It prints progress every 5 minutes.""")
 code("""
-# optional: upload the adapter to Hugging Face (create a WRITE token at huggingface.co/settings/tokens)
-if HF_REPO:
-    from huggingface_hub import login, HfApi
-    login()
-    HfApi().create_repo(HF_REPO, private=True, exist_ok=True)
-    HfApi().upload_folder(folder_path="adapters/a1", repo_id=HF_REPO)
-    print("https://huggingface.co/" + HF_REPO)
-else:
-    print("Adapter is on Drive:", DRIVE_DIR + "/adapters/a1  (share that folder link in MODEL_CARD.md)")
-""")
-md("""## 4. Experiments on the practice set (Step 5)
-Free the GPU first (restart the runtime after training, then re-run part 1 only).
-`g34_run.py` skips finished runs. To split work between members, give each a different `--configs`.""")
-code("""
-!python scripts/g34_run.py --split dev --adapter-path adapters/a1 --configs M0+A0,M1+A0,M0+A1,M1+A1
+!git pull -q; python scripts/colab_jobs.py
 """)
 code("""
 !python -m harness.summarize --group G34 --split dev
-!mkdir -p report && python -m harness.summarize --group G34 --split dev --latex > report/table_2x2_dev.tex
-!python scripts/dashboard.py --group G34 --split dev
-""")
-md("""## 5. Memory ablation (Step 5.2): summary length 40 words vs the default 120
-Kept under a separate group id (`G34abl40`) so the main results stay untouched.""")
-code("""
-!python scripts/g34_run.py --split dev --group G34abl40 --configs M1+A0 --env QA_M1_MAX_WORDS=40
 !python -m harness.summarize --group G34abl40 --split dev
 """)
-md("## 6. Secret test (only inside the 48-hour Arena window)")
+md("## 4. Secret test (only inside the 48-hour Arena window; skipped until the file is in the repo folder)")
 code("""
-SECRET = "secret_test_questions.jsonl"   # upload it next to this notebook's repo folder
-!python scripts/g34_run.py --split test --questions {SECRET} --adapter-path adapters/a1
-!python -m harness.trace_export --group G34 --split test
-!python scripts/dashboard.py --group G34 --split test
+SECRET = "secret_test_questions.jsonl"
+if os.path.exists(SECRET):
+    !python scripts/colab_jobs.py --role test --questions {SECRET}
+else:
+    print("no", SECRET, "here: skipped")
 """)
-md("## 7. Regression gate (real model), trace bundle, error candidates")
+md("## 5. Regression gate (real model), trace bundle, dashboard, error candidates")
 code("""
-!python -m harness.smoke --group G34 --memory M1 --adapter A0 --accept
+!python -m harness.smoke --group G34 --memory M1 --adapter A0
 !python -m harness.trace_export --group G34
-!python scripts/error_candidates.py --group G34 --split dev --n 80 > ERRORS_candidates.csv
-!cp ERRORS_candidates.csv report/dashboard_* {DRIVE_DIR}/ 2>/dev/null; ls {DRIVE_DIR}
+!python scripts/dashboard.py --group G34 --split dev
+!python scripts/error_candidates.py --group G34 --split dev --n 80 > outputs/ERRORS_candidates.csv
 """)
 
 nb = {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"gpuType": "T4"},
@@ -200,5 +146,5 @@ nb = {"cells": cells, "metadata": {"accelerator": "GPU", "colab": {"gpuType": "T
                                    "language_info": {"name": "python"}},
       "nbformat": 4, "nbformat_minor": 5}
 out = ROOT / "notebooks" / "G34_colab_pipeline.ipynb"
-out.write_text(json.dumps(nb, indent=1), encoding="utf-8")
+out.write_text(json.dumps(nb, indent=1, ensure_ascii=False), encoding="utf-8")
 print("wrote", out)
